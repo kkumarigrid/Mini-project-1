@@ -2,6 +2,8 @@ import streamlit as st
 from dotenv import load_dotenv
 import os
 
+
+
 from db import db, get_connection
 from auth import signup, login
 from scraper import Scraper
@@ -98,9 +100,9 @@ elif choice == "Add Recipe":
                 with db.get_cursor() as cur:
                     cur.execute(
                         """INSERT INTO recipes
-                           (name, cuisine, diet, cooking_time, calories, protein, carbs, fat)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                        (name.strip(), cuisine, diet, time, calories, protein, carbs, fat)
+                        (name, cuisine, diet, cooking_time, calories, protein, carbs, fat, created_by)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                        (name.strip(), cuisine, diet, time, calories, protein, carbs, fat, st.session_state.user["id"])
                     )
                     recipe_id = cur.fetchone()["id"]
                     for ing in ingredients.split(","):
@@ -288,60 +290,83 @@ elif choice == "Manage Recipes":
     if not st.session_state.user:
         st.warning("Please login first.")
     else:
+        user_id = st.session_state.user["id"]
+
+        st.markdown("### ❤️ Liked Recipes")
         with db.get_cursor() as cur:
-            cur.execute("SELECT * FROM recipes ORDER BY id DESC")
-            data = cur.fetchall()
+            cur.execute(
+                """SELECT r.* FROM recipes r
+                   JOIN likes l ON r.id = l.recipe_id
+                   WHERE l.user_id = %s ORDER BY r.id DESC""",
+                (user_id,)
+            )
+            liked = cur.fetchall()
 
-        if not data:
-            st.info("No recipes found.")
-
-        for r in data:
+        if not liked:
+            st.caption("No liked recipes yet.")
+        for r in liked:
             r = dict(r)
-            with st.expander(f"🍽️ {r['name']}  |  {r['cuisine']} · {r['diet']}"):
-                with st.form(f"edit_{r['id']}"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        new_name    = st.text_input("Name", value=r["name"])
-                        new_cuisine = st.selectbox(
-                            "Cuisine", CUISINES,
-                            index=CUISINES.index(r["cuisine"]) if r["cuisine"] in CUISINES else 0
+            col1, col2 = st.columns([4, 1])
+            col1.write(f"🍽️ {r['name']} — {r['cuisine']} · {r['diet']}")
+            with col2:
+                if st.button("💔 Unlike", key=f"unlike_{r['id']}"):
+                    with db.get_cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM likes WHERE user_id=%s AND recipe_id=%s",
+                            (user_id, r["id"])
                         )
-                        new_diet = st.selectbox(
-                            "Diet", DIETS,
-                            index=DIETS.index(r["diet"]) if r["diet"] in DIETS else 0
+                    st.rerun()
+
+        st.markdown("---")
+        st.markdown("### 💾 Saved Recipes")
+        with db.get_cursor() as cur:
+            cur.execute(
+                """SELECT r.* FROM recipes r
+                   JOIN saved_recipes s ON r.id = s.recipe_id
+                   WHERE s.user_id = %s ORDER BY r.id DESC""",
+                (user_id,)
+            )
+            saved = cur.fetchall()
+
+        if not saved:
+            st.caption("No saved recipes yet.")
+        for r in saved:
+            r = dict(r)
+            col1, col2 = st.columns([4, 1])
+            col1.write(f"🍽️ {r['name']} — {r['cuisine']} · {r['diet']}")
+            with col2:
+                if st.button("🗑️ Unsave", key=f"unsave_{r['id']}"):
+                    with db.get_cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM saved_recipes WHERE user_id=%s AND recipe_id=%s",
+                            (user_id, r["id"])
                         )
-                    with col2:
-                        new_time = st.number_input("Cooking Time", value=max(1, r["cooking_time"]), min_value=1)
-                        new_cal  = st.number_input("Calories",     value=r["calories"],     min_value=0)
-                        new_pro  = st.number_input("Protein (g)",  value=r["protein"],      min_value=0)
-                        new_carb = st.number_input("Carbs (g)",    value=r["carbs"],        min_value=0)
-                        new_fat  = st.number_input("Fat (g)",      value=r["fat"],          min_value=0)
-                    update_btn = st.form_submit_button("💾 Update")
+                    st.rerun()
 
-                if update_btn:
-                    if not new_name.strip():
-                        st.error("Name cannot be empty.")
-                    else:
-                        with db.get_cursor() as cur:
-                            cur.execute(
-                                """UPDATE recipes
-                                   SET name=%s, cuisine=%s, diet=%s, cooking_time=%s,
-                                       calories=%s, protein=%s, carbs=%s, fat=%s
-                                   WHERE id=%s""",
-                                (new_name.strip(), new_cuisine, new_diet, new_time,
-                                 new_cal, new_pro, new_carb, new_fat, r["id"])
-                            )
-                        st.success(f"✅ '{new_name}' updated!")
-                        st.rerun()
+        st.markdown("---")
+        st.markdown("### ➕ My Added Recipes")
+        with db.get_cursor() as cur:
+            cur.execute(
+                "SELECT * FROM recipes WHERE created_by = %s ORDER BY id DESC",
+                (user_id,)
+            )
+            my_recipes = cur.fetchall()
 
-                st.markdown("---")
-                confirm = st.checkbox("Confirm delete", key=f"confirm_{r['id']}")
-                if confirm:
-                    if st.button("🗑️ Delete", key=f"del_{r['id']}"):
-                        with db.get_cursor() as cur:
-                            cur.execute("DELETE FROM recipes WHERE id = %s", (r["id"],))
-                        st.warning(f"'{r['name']}' deleted.")
-                        st.rerun()
+        if not my_recipes:
+            st.caption("No recipes added by you yet.")
+        for r in my_recipes:
+            r = dict(r)
+            col1, col2 = st.columns([4, 1])
+            col1.write(f"🍽️ {r['name']} — {r['cuisine']} · {r['diet']}")
+            with col2:
+                if st.button("🗑️ Delete", key=f"del_{r['id']}"):
+                    with db.get_cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM recipes WHERE id=%s AND created_by=%s",
+                            (r["id"], user_id)
+                        )
+                    st.success(f"'{r['name']}' deleted.")
+                    st.rerun()
 
 # ── SEED DATABASE ─────────────────────────────────────────────────────────────
 elif choice == "Seed Database":
